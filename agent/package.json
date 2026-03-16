@@ -9,7 +9,7 @@
     "test": "echo \"Tests pending for Smasage Agent\" && exit 0"
   },
   "dependencies": {
-    "openclaw": "^0.1.0",
+    "openclaw": "^2026.3.13",
     "dotenv": "^16.4.5"
   }
 }

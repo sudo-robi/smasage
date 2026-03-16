@@ -1,4 +1,4 @@
-name: Smasage CI Pipelines
+name: CI Pipelines
 
 on:
   push:
