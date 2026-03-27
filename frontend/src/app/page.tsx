@@ -1,6 +1,10 @@
 "use client"
 import React, { useState, useEffect, useRef } from 'react';
 import { Bot, Send, Wallet, TrendingUp, Target, Activity, CheckCircle2 } from 'lucide-react';
+import { DashboardHeader } from './components/DashboardHeader';
+import { ConnectWalletButton } from './components/ConnectWalletButton';
+import { useWallet } from './components/WalletContext';
+import * as freighterApi from '@stellar/freighter-api';
 
 interface Message {
   id: number;
@@ -9,6 +13,21 @@ interface Message {
 }
 
 export default function Home() {
+  const { publicKey, setPublicKey } = useWallet();
+  const [showInstallModal, setShowInstallModal] = useState(false);
+    // Connect Wallet logic
+    const handleConnectWallet = async () => {
+      if (!(window as any).freighterApi) {
+        setShowInstallModal(true);
+        return;
+      }
+      try {
+        const key = await freighterApi.getPublicKey();
+        setPublicKey(key);
+      } catch (e) {
+        // Optionally handle rejection
+      }
+    };
   const [messages, setMessages] = useState<Message[]>([
     { id: 1, sender: 'agent', text: "Welcome to Smasage! 👋 I'm OpenClaw, your personal AI savings assistant natively built on Stellar. What financial goal can we crush today?" }
   ]);
@@ -50,7 +69,21 @@ export default function Home() {
   };
 
   return (
-    <main className="app-container">
+    <>
+      <DashboardHeader>
+        <ConnectWalletButton onClick={handleConnectWallet} publicKey={publicKey || undefined} />
+      </DashboardHeader>
+      {showInstallModal && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <h2>Freighter Wallet Not Detected</h2>
+            <p>Please install the Freighter browser extension to connect your wallet.</p>
+            <a href="https://freighter.app/" target="_blank" rel="noopener noreferrer" className="install-link">Install Freighter</a>
+            <button onClick={() => setShowInstallModal(false)} className="close-modal">Close</button>
+          </div>
+        </div>
+      )}
+      <main className="app-container">
       {/* Left Panel - Dashboard */}
       <div className="glass-panel">
         <h1>Smasage Portfolio</h1>
@@ -175,5 +208,50 @@ export default function Home() {
         </div>
       </div>
     </main>
-  );
+    </main>
+    </>
+// Add minimal modal styles
+// You may want to move this to your CSS file
+const modalStyles = `
+.modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-content {
+  background: #18181b;
+  color: #fff;
+  padding: 2rem 2.5rem;
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+  text-align: center;
+  min-width: 320px;
+}
+.install-link {
+  display: inline-block;
+  margin: 1rem 0;
+  color: #8b5cf6;
+  font-weight: 600;
+  text-decoration: underline;
+}
+.close-modal {
+  background: #27272a;
+  color: #fff;
+  border: none;
+  padding: 0.5rem 1.5rem;
+  border-radius: 8px;
+  cursor: pointer;
+  margin-top: 1rem;
+}
+`;
+if (typeof window !== 'undefined' && !document.getElementById('modal-styles')) {
+  const style = document.createElement('style');
+  style.id = 'modal-styles';
+  style.innerHTML = modalStyles;
+  document.head.appendChild(style);
+}
 }
