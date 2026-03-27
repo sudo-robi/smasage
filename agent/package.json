@@ -6,9 +6,9 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "test": "ts-node goal-projection.ts",
+    "test": "node --loader ts-node/esm goal-projection.ts",
     "build": "tsc",
-    "read-balances": "ts-node balance-reader.ts"
+    "read-balances": "node --loader ts-node/esm balance-reader.ts"
   },
   "dependencies": {
     "openclaw": "^2026.3.13",

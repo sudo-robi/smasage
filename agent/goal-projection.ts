@@ -177,7 +177,9 @@ export function generateProjectionCurve(
 }
 
 // Example usage and tests
-if (require.main === module) {
+const isMainModule = import.meta.url === `file://${process.argv[1]}`;
+
+if (isMainModule) {
   console.log('🧮 Testing Goal Projection Calculator...\n');
   
   // Test Case 1: User on track
