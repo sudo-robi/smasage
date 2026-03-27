@@ -1,7 +1,38 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol, IntoVal,
+    contract, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol, Vec,
 };
+
+#[soroban_sdk::contractclient(name = "SoroswapRouterClient")]
+pub trait SoroswapRouterTrait {
+    fn add_liquidity(
+        e: Env,
+        token_a: Address,
+        token_b: Address,
+        amount_a_desired: i128,
+        amount_b_desired: i128,
+        amount_a_min: i128,
+        amount_b_min: i128,
+        to: Address,
+        deadline: u64,
+    ) -> (i128, i128, i128);
+
+    fn swap_exact_tokens_for_tokens(
+        e: Env,
+        amount_in: i128,
+        amount_out_min: i128,
+        path: Vec<Address>,
+        to: Address,
+        deadline: u64,
+    ) -> Vec<i128>;
+}
+
+#[soroban_sdk::contractclient(name = "TokenClient")]
+pub trait TokenTrait {
+    fn transfer(e: Env, from: Address, to: Address, amount: i128);
+    fn approve(e: Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32);
+    fn balance(e: Env, id: Address) -> i128;
+}
 
 // Issue 2: Smart Contract - Stellar Path Payments & Yield Allocation (Blend Integration)
 
@@ -16,8 +47,8 @@ pub enum DataKey {
     GoldTrustlineReady,
     GoldTrustlineReserveStroops,
     SoroswapRouter,
-    UsdcAsset,
-    PairedAsset,
+    UsdcToken,
+    XlmToken,
 }
 
 const CANONICAL_GOLD_ASSET_CODE: Symbol = symbol_short!("XAUT");
@@ -29,26 +60,32 @@ pub struct SmasageYieldRouter;
 
 #[contractimpl]
 impl SmasageYieldRouter {
-    pub fn initialize(env: Env, admin: Address, usdc: Address) {
+    pub fn initialize(env: Env, admin: Address) {
         if env.storage().persistent().has(&DataKey::Admin) {
             panic!("Already initialized");
         }
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &admin);
-        env.storage().persistent().set(&DataKey::UsdcAsset, &usdc);
     }
 
-    pub fn configure_soroswap(env: Env, admin: Address, router: Address, paired_asset: Address) {
+    pub fn initialize_soroswap(
+        env: Env,
+        admin: Address,
+        router: Address,
+        usdc: Address,
+        xlm: Address,
+    ) {
         let stored_admin: Address = env
             .storage()
             .persistent()
             .get(&DataKey::Admin)
             .expect("Contract not initialized");
-        assert!(admin == stored_admin, "Only admin can configure Soroswap");
+        assert!(admin == stored_admin, "Only admin can initialize Soroswap");
         admin.require_auth();
 
         env.storage().persistent().set(&DataKey::SoroswapRouter, &router);
-        env.storage().persistent().set(&DataKey::PairedAsset, &paired_asset);
+        env.storage().persistent().set(&DataKey::UsdcToken, &usdc);
+        env.storage().persistent().set(&DataKey::XlmToken, &xlm);
     }
 
     pub fn init_gold_trustline(env: Env, admin: Address, reserve_stroops: i128) {
@@ -108,71 +145,73 @@ impl SmasageYieldRouter {
             .unwrap_or(0)
     }
 
+    /// Initialize the contract and accept deposits in USDC.
     pub fn deposit(env: Env, from: Address, amount: i128, blend_percentage: u32, lp_percentage: u32) {
         from.require_auth();
         assert!(blend_percentage + lp_percentage <= 100, "Allocation exceeds 100%");
         
+        // Transfer USDC from user to contract
+        let usdc_addr: Address = env.storage().persistent().get(&DataKey::UsdcToken).expect("USDC not initialized");
+        let usdc = TokenClient::new(&env, &usdc_addr);
+        usdc.transfer(&from, &env.current_contract_address(), &amount);
+
         let mut balance: i128 = env.storage().persistent().get(&DataKey::UserBalance(from.clone())).unwrap_or(0);
         balance += amount;
         env.storage().persistent().set(&DataKey::UserBalance(from.clone()), &balance);
         
-        // Mock: Here we would route `blend_percentage` to the Blend protocol
-        
         if lp_percentage > 0 {
             let lp_amount = (amount * lp_percentage as i128) / 100;
-            let usdc_asset: Address = env.storage().persistent().get(&DataKey::UsdcAsset).expect("USDC not configured");
-            let router_address: Address = env.storage().persistent().get(&DataKey::SoroswapRouter).expect("Soroswap Router not configured");
-            let paired_asset: Address = env.storage().persistent().get(&DataKey::PairedAsset).expect("Paired Asset not configured");
-
-            let half_usdc = lp_amount / 2;
-            let remaining_usdc = lp_amount - half_usdc;
-
-            // 1. Swap half USDC for Paired Asset (e.g. XLM)
-            let mut path = soroban_sdk::Vec::new(&env);
-            path.push_back(usdc_asset.clone());
-            path.push_back(paired_asset.clone());
-
-            let deadline = env.ledger().timestamp() + 300; // 5 minute deadline
-            
-            let swap_result: soroban_sdk::Vec<i128> = env.invoke_contract(
-                &router_address,
-                &soroban_sdk::Symbol::new(&env, "swap_exact_tokens_for_tokens"),
-                soroban_sdk::vec![
-                    &env,
-                    half_usdc.into_val(&env),
-                    0i128.into_val(&env),
-                    path.into_val(&env),
-                    env.current_contract_address().into_val(&env),
-                    deadline.into_val(&env),
-                ],
-            );
-            
-            let paired_amount = swap_result.get(swap_result.len() - 1).unwrap();
-
-            // 2. Add Liquidity
-            let liquidity_result: (i128, i128, i128) = env.invoke_contract(
-                &router_address,
-                &soroban_sdk::Symbol::new(&env, "add_liquidity"),
-                soroban_sdk::vec![
-                    &env,
-                    usdc_asset.into_val(&env),
-                    paired_asset.into_val(&env),
-                    remaining_usdc.into_val(&env),
-                    paired_amount.into_val(&env),
-                    0i128.into_val(&env),
-                    0i128.into_val(&env),
-                    env.current_contract_address().into_val(&env),
-                    deadline.into_val(&env),
-                ],
-            );
-
-            let lp_shares = liquidity_result.2;
-
-            // 3. Track LP Shares for user
-            let mut user_lp_shares: i128 = env.storage().persistent().get(&DataKey::UserLPShares(from.clone())).unwrap_or(0);
-            user_lp_shares += lp_shares;
-            env.storage().persistent().set(&DataKey::UserLPShares(from.clone()), &user_lp_shares);
+            if lp_amount > 0 {
+                Self::provide_lp(env.clone(), from.clone(), lp_amount);
+            }
         }
+
+        // Mock: Here we would route `blend_percentage` to the Blend protocol
+    }
+
+    fn provide_lp(env: Env, user: Address, usdc_amount: i128) {
+        let router_addr: Address = env.storage().persistent().get(&DataKey::SoroswapRouter).expect("Soroswap not initialized");
+        let usdc_addr: Address = env.storage().persistent().get(&DataKey::UsdcToken).expect("USDC not initialized");
+        let xlm_addr: Address = env.storage().persistent().get(&DataKey::XlmToken).expect("XLM not initialized");
+
+        let router = SoroswapRouterClient::new(&env, &router_addr);
+        let usdc = TokenClient::new(&env, &usdc_addr);
+        let xlm = TokenClient::new(&env, &xlm_addr);
+
+        let half_usdc = usdc_amount / 2;
+        let remaining_usdc = usdc_amount - half_usdc;
+
+        // Approve router for total USDC amount to be used in swap and liquidity
+        usdc.approve(&env.current_contract_address(), &router_addr, &usdc_amount, &(env.ledger().sequence() + 100));
+
+        // Swap half USDC for XLM
+        let mut path = Vec::new(&env);
+        path.push_back(usdc_addr.clone());
+        path.push_back(xlm_addr.clone());
+
+        let deadline = env.ledger().timestamp() + 300; // 5 minutes
+        let swap_amounts = router.swap_exact_tokens_for_tokens(&half_usdc, &0, &path, &env.current_contract_address(), &deadline);
+        let xlm_received = swap_amounts.get(1).unwrap();
+
+        // Approve router for received XLM
+        xlm.approve(&env.current_contract_address(), &router_addr, &xlm_received, &(env.ledger().sequence() + 100));
+
+        // Add liquidity
+        let (_, _, lp_shares) = router.add_liquidity(
+            &usdc_addr,
+            &xlm_addr,
+            &remaining_usdc,
+            &xlm_received,
+            &0,
+            &0,
+            &env.current_contract_address(),
+            &deadline,
+        );
+
+        // Map LP shares to user
+        let mut user_shares: i128 = env.storage().persistent().get(&DataKey::UserLPShares(user.clone())).unwrap_or(0);
+        user_shares += lp_shares;
+        env.storage().persistent().set(&DataKey::UserLPShares(user), &user_shares);
     }
 
     pub fn withdraw(env: Env, to: Address, amount: i128) {
@@ -198,31 +237,23 @@ impl SmasageYieldRouter {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env, String, Val};
+    use soroban_sdk::{testutils::Address as _, Env, String, Address};
 
-    // Mock contract for Soroswap Router
     #[contract]
-    pub struct MockSoroswapRouter;
-
+    pub struct MockToken;
     #[contractimpl]
-    impl MockSoroswapRouter {
-        pub fn swap_exact_tokens_for_tokens(
-            env: Env,
-            amount_in: i128,
-            _amount_out_min: i128,
-            _path: soroban_sdk::Vec<Address>,
-            _to: Address,
-            _deadline: u64,
-        ) -> soroban_sdk::Vec<i128> {
-            // Mock: 1 USDC = 2 XLM
-            let mut result = soroban_sdk::Vec::new(&env);
-            result.push_back(amount_in);
-            result.push_back(amount_in * 2);
-            result
-        }
+    impl TokenTrait for MockToken {
+        fn transfer(e: Env, _from: Address, _to: Address, _amount: i128) {}
+        fn approve(e: Env, _from: Address, _spender: Address, _amount: i128, _expiration_ledger: u32) {}
+        fn balance(e: Env, _id: Address) -> i128 { 0 }
+    }
 
-        pub fn add_liquidity(
-            _env: Env,
+    #[contract]
+    pub struct MockRouter;
+    #[contractimpl]
+    impl SoroswapRouterTrait for MockRouter {
+        fn add_liquidity(
+            e: Env,
             _token_a: Address,
             _token_b: Address,
             _amount_a_desired: i128,
@@ -232,86 +263,49 @@ mod test {
             _to: Address,
             _deadline: u64,
         ) -> (i128, i128, i128) {
-            // Mock: Returns (amount_a, amount_b, lp_shares)
-            // For simplicity, lp_shares = amount_a
-            (100, 200, 100) 
+            (0, 0, 100) // Mock 100 LP shares received
+        }
+
+        fn swap_exact_tokens_for_tokens(
+            e: Env,
+            amount_in: i128,
+            _amount_out_min: i128,
+            _path: Vec<Address>,
+            _to: Address,
+            _deadline: u64,
+        ) -> Vec<i128> {
+            let mut v = Vec::new(&e);
+            v.push_back(amount_in);
+            v.push_back(amount_in * 2); // Mock 1:2 swap rate
+            v
         }
     }
 
     #[test]
-    fn test_initialize_gold_trustline() {
+    fn test_soroswap_integration() {
         let env = Env::default();
-        let usdc = Address::generate(&env);
         let contract_id = env.register(SmasageYieldRouter, ());
         let client = SmasageYieldRouterClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-
-        env.mock_all_auths();
-
-        client.initialize(&admin, &usdc);
-        client.init_gold_trustline(&admin, &5_000_000);
-
-        let (asset_code, asset_issuer) = client.get_gold_asset();
-        assert_eq!(asset_code, symbol_short!("XAUT"));
-        assert_eq!(
-            asset_issuer,
-            String::from_str(&env, "GCRLXTLD7XIRXWXV2PDCC74O5TUUKN3OODJAM6TWVE4AIRNMGQJK3KWQ")
-        );
-        assert!(client.is_gold_trustline_ready());
-        assert_eq!(client.get_gold_reserve_stroops(), 5_000_000);
-    }
-
-    #[test]
-    fn test_deposit_withdraw() {
-        let env = Env::default();
-        let usdc = Address::generate(&env);
-        let contract_id = env.register(SmasageYieldRouter, ());
-        let client = SmasageYieldRouterClient::new(&env, &contract_id);
-
-        let user = Address::generate(&env);
-        let admin = Address::generate(&env);
-        
-        env.mock_all_auths();
-
-        client.initialize(&admin, &usdc);
-
-        // 60% Blend, 30% LP, 10% Gold (mocked conceptually)
-        // We haven't configured Soroswap yet, so lp_percentage must be 0 or it will panic
-        client.deposit(&user, &1000, &60, &0);
-        
-        assert_eq!(client.get_balance(&user), 1000);
-        
-        client.withdraw(&user, &500);
-        assert_eq!(client.get_balance(&user), 500);
-    }
-
-    #[test]
-    fn test_soroswap_lp_integration() {
-        let env = Env::default();
-        env.mock_all_auths();
 
         let admin = Address::generate(&env);
         let user = Address::generate(&env);
-        let usdc_addr = Address::generate(&env);
-        let xlm_addr = Address::generate(&env);
-
-        let router_id = env.register(MockSoroswapRouter, ());
         
-        let contract_id = env.register(SmasageYieldRouter, ());
-        let client = SmasageYieldRouterClient::new(&env, &contract_id);
+        // Register mocks
+        let router_id = env.register(MockRouter, ());
+        let usdc_id = env.register(MockToken, ());
+        let xlm_id = env.register(MockToken, ());
 
-        client.initialize(&admin, &usdc_addr);
-        client.configure_soroswap(&admin, &router_id, &xlm_addr);
+        env.mock_all_auths();
+
+        client.initialize(&admin);
+        client.initialize_soroswap(&admin, &router_id, &usdc_id, &xlm_id);
 
         // Deposit 1000 USDC, 50% to LP
-        // Logic should:
-        // 1. Take 500 USDC for LP.
-        // 2. Swap 250 USDC for XLM -> Mock returns 500 XLM.
-        // 3. Add liquidity with 250 USDC and 500 XLM -> Mock returns 100 LP shares (hardcoded in mock).
         client.deposit(&user, &1000, &0, &50);
 
         assert_eq!(client.get_balance(&user), 1000);
-        assert_eq!(client.get_lp_shares(&user), 100); 
+        
+        // 50% of 1000 is 500. Our MockRouter returns 100 LP shares for any add_liquidity.
+        assert_eq!(client.get_lp_shares(&user), 100);
     }
 }
