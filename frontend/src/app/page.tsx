@@ -2,6 +2,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Bot, Send, Wallet, TrendingUp, Target, Activity, CheckCircle2 } from 'lucide-react';
 import { evaluateGoalStatus, formatCurrency, getStatusColor, type GoalData } from '../utils/goalProjection';
+import PortfolioChart from './PortfolioChart';
+import { parseAllocationsFromMessage, getDefaultAllocations } from '../utils/allocationParser';
+import type { AssetAllocation } from '../utils/chartUtils';
 
 interface Message {
   id: number;
@@ -18,6 +21,7 @@ export default function Home() {
 
   const [progress, setProgress] = useState(0);
   const [goalStatus, setGoalStatus] = useState<'On Track' | 'Ahead' | 'Falling Behind'>('On Track');
+  const [allocations, setAllocations] = useState<AssetAllocation[]>(getDefaultAllocations());
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Auto scroll
@@ -58,6 +62,12 @@ export default function Home() {
         text: "That's a great goal. I'll allocate 60% to Stellar Blend for safe yield, and the rest to Soroswap XLM/USDC LP to accelerate returns. Does that sound good?"
       };
       setMessages(prev => [...prev, agentMsg]);
+      
+      // Parse allocations from agent message
+      const parsedAllocations = parseAllocationsFromMessage(agentMsg.text);
+      if (parsedAllocations) {
+        setAllocations(parsedAllocations);
+      }
     }, 1800);
   };
 
@@ -115,33 +125,17 @@ export default function Home() {
         </div>
 
         <div className="allocation-list">
-          <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.1rem', marginBottom: '0.5rem', marginTop: '1rem' }}>
+          <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.1rem', marginBottom: '1.25rem', marginTop: '1rem' }}>
             <Activity size={18} /> Active Strategy Routes
           </h3>
-
-          <div className="allocation-item">
-            <div className="allocation-header">
-              <span>Blend Protocol Yield (USDC)</span>
-              <span>60%</span>
-            </div>
-            <div className="allocation-bar"><div className="allocation-fill fill-blend" style={{ width: '60%' }}></div></div>
-          </div>
-
-          <div className="allocation-item">
-            <div className="allocation-header">
-              <span>Soroswap LP (XLM/USDC)</span>
-              <span>30%</span>
-            </div>
-            <div className="allocation-bar"><div className="allocation-fill fill-soro" style={{ width: '30%' }}></div></div>
-          </div>
-
-          <div className="allocation-item">
-            <div className="allocation-header">
-              <span>Stellar Anchored Gold (XAUT)</span>
-              <span>10%</span>
-            </div>
-            <div className="allocation-bar"><div className="allocation-fill fill-gold" style={{ width: '10%' }}></div></div>
-          </div>
+          
+          <PortfolioChart 
+            allocations={allocations}
+            width={320}
+            height={280}
+            showLegend={true}
+            animated={true}
+          />
         </div>
       </div>
 
